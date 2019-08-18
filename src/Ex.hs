@@ -84,15 +84,17 @@ newFiles :: IO (IORef Files)
 newFiles = newIORef $ Files M.empty
 
 main :: IO ()
-main = fuseMain helloFSOps defaultExceptionHandler
+main = do
+    fsOps <- transformOps helloFSOps
+    fuseMain fsOps defaultExceptionHandler
 
-helloFSOps :: FuseOperations HT
-helloFSOps = defaultFuseOps { fuseGetFileStat = helloGetFileStat
-                            , fuseOpen        = helloOpen
-                            , fuseRead        = helloRead
-                            , fuseOpenDirectory = helloOpenDirectory
-                            , fuseReadDirectory = helloReadDirectory
-                            , fuseGetFileSystemStats = helloGetFileSystemStats
+helloFSOps :: BetterFuseOps HT FilesM
+helloFSOps = BetterFuseOps { mfuseGetFileStat = helloGetFileStat
+                            , mfuseOpen        = helloOpen
+                            , mfuseRead        = helloRead
+                            , mfuseOpenDirectory = helloOpenDirectory
+                            , mfuseReadDirectory = helloReadDirectory
+                            , mfuseGetFileSystemStats = helloGetFileSystemStats
                             }
 
 
@@ -141,12 +143,12 @@ fileStat ctx = FileStat { statEntryType = RegularFile
                         , statStatusChangeTime = 0
                         }
 
-helloGetFileStat :: FilePath -> IO (Either Errno FileStat)
+helloGetFileStat :: FilePath -> FilesM (Either Errno FileStat)
 helloGetFileStat "/" = do
-    ctx <- getFuseContext
+    ctx <- liftIO getFuseContext
     return $ Right $ dirStat ctx
 helloGetFileStat path | path == helloPath = do
-    ctx <- getFuseContext
+    ctx <- liftIO getFuseContext
     return $ Right $ fileStat ctx
 helloGetFileStat _ =
     return $ Left eNOENT
@@ -155,10 +157,10 @@ helloOpenDirectory :: Monad m => [Char] -> m Errno
 helloOpenDirectory "/" = return eOK
 helloOpenDirectory _   = return eNOENT
 
-helloReadDirectory :: FilePath -> IO (Either Errno [(FilePath, FileStat)])
+helloReadDirectory :: FilePath -> FilesM (Either Errno [(FilePath, FileStat)])
 helloReadDirectory "/" = do
 
-    ctx <- getFuseContext
+    ctx <- liftIO $ getFuseContext
     return $ Right [(".",          dirStat  ctx)
                    ,("..",         dirStat  ctx)
                    ,(helloName,    fileStat ctx)
@@ -166,7 +168,7 @@ helloReadDirectory "/" = do
     where (_:helloName) = helloPath
 helloReadDirectory _ = return (Left (eNOENT))
 
-helloOpen :: FilePath -> OpenMode -> OpenFileFlags -> IO (Either Errno HT)
+helloOpen :: FilePath -> OpenMode -> OpenFileFlags -> FilesM (Either Errno HT)
 helloOpen path mode flags
     | path == helloPath = case mode of
                             ReadOnly -> return (Right ())
@@ -174,13 +176,13 @@ helloOpen path mode flags
     | otherwise         = return (Left eNOENT)
 
 
-helloRead :: FilePath -> HT -> ByteCount -> FileOffset -> IO (Either Errno B.ByteString)
+helloRead :: FilePath -> HT -> ByteCount -> FileOffset -> FilesM (Either Errno B.ByteString)
 helloRead path _ byteCount offset
     | path == helloPath =
         return $ Right $ B.take (fromIntegral byteCount) $ B.drop (fromIntegral offset) helloString
     | otherwise         = return $ Left eNOENT
 
-helloGetFileSystemStats :: String -> IO (Either Errno FileSystemStats)
+helloGetFileSystemStats :: String -> FilesM (Either Errno FileSystemStats)
 helloGetFileSystemStats str =
   return $ Right $ FileSystemStats
     { fsStatBlockSize = 512

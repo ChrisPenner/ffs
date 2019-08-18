@@ -4,4 +4,4 @@ import Lib
 import qualified Ex
 
 main :: IO ()
-main = Ex.main
+main = appendFile "/Users/chris/fuse.log" "\n\n======\n\n" >> Ex.main

@@ -27,6 +27,7 @@ dependencies:
 - unix
 - mtl
 - lens
+- filepath
 
 library:
   source-dirs: src

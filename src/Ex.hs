@@ -4,6 +4,7 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 module Ex where
 
 import Prelude hiding (log)
@@ -13,12 +14,16 @@ import Control.Lens
 import System.Posix.Types
 import System.Posix.Files
 import System.Posix.IO
+import Data.Foldable
 import Data.IORef
 import Control.Monad.State
 import qualified Data.ByteString as BS
 import qualified Data.Map as M
+import qualified Data.Set as S
 import Data.Bifunctor
 import System.FilePath.Lens
+import System.FilePath.Posix
+import Data.Maybe
 
 import System.Fuse
 
@@ -26,7 +31,7 @@ type HT = ()
 
 type TagPath = String
 data FType = Tag | File
-    deriving (Show, Eq)
+    deriving (Show, Eq, Ord)
 
 data BetterFuseOps fh m = BetterFuseOps  {
         mfuseGetFileStat :: FilePath -> m (Either Errno FileStat),
@@ -61,7 +66,7 @@ data BetterFuseOps fh m = BetterFuseOps  {
         -- fuseDestroy :: IO ()
       }
 
-newtype Files = Files {unFiles :: (M.Map String [(FilePath, FType)])}
+newtype Files = Files {unFiles :: (M.Map String (S.Set (FilePath, FType)))}
 makeLensesFor [("unFiles", "files")] ''Files
 
 newtype FilesM a = FilesM {runFilesM :: StateT Files IO a }
@@ -86,7 +91,16 @@ transformOps BetterFuseOps{..} = do
 
 exampleTags :: IORef Files -> IO ()
 exampleTags ref = do
-    modifyIORef ref (files <>~ M.fromList [("photos", [("pic.jpg", File), ("image.png", File)]), ("movies", [("anime.mkv", File)])])
+    modifyIORef ref
+                (files
+                 <>~ M.fromList [ ( "photos"
+                                  , S.fromList [("pic.jpg", File), ("image.png", File), ("sandy-beach.png", File)]
+                                  )
+                                , ("movies", S.fromList [("anime.mkv", File)])
+                                , ("vacation"
+                                  , S.fromList [("location", Tag), ("sandy-beach.png", File)]
+                                  )
+                                ])
 
 wrapState :: IORef Files -> FilesM a -> IO a
 wrapState ref m = do
@@ -108,7 +122,7 @@ helloFSOps = BetterFuseOps { mfuseGetFileStat = helloGetFileStat
                            , mfuseOpen        = helloOpen
                            , mfuseRead        = helloRead
                            , mfuseOpenDirectory = openTag
-                           , mfuseReadDirectory = readTag
+                           , mfuseReadDirectory = taggedWith
                            , mfuseGetFileSystemStats = helloGetFileSystemStats
                            , mfuseInit = helloInit
                            }
@@ -180,8 +194,8 @@ openTag tagPath = do
     if exists then return eOK
               else return eNOENT
 
-readTag :: FilePath -> FilesM (Either Errno [(FilePath, FileStat)])
-readTag "/" = do
+taggedWith :: TagPath -> FilesM (Either Errno [(FilePath, FileStat)])
+taggedWith "/" = do
     log ("reading: " <> "/")
     ctx <- liftIO $ getFuseContext
     tagFiles <- gets (M.keys . unFiles)
@@ -189,27 +203,22 @@ readTag "/" = do
     pure . Right
         $ [(".", dirStat ctx), ("..", dirStat ctx)] <> ((, fileStat ctx) <$> tagFiles)
 
-readTag tag = do
-    log ("reading: " <> "/")
+taggedWith tagPath = do
+    let tags = tail $ splitDirectories tagPath -- Strip of leading "/"
+    log ("reading: " <> show tags)
     ctx <- liftIO $ getFuseContext
-    tagFiles <- use (files . ix tag)
-    log ("found tagged: " <> show tagFiles)
+    tagMap <- use files
+    let allTaggedFiles :: [S.Set (FilePath, FType)]
+          = fmap (\tag -> fromMaybe mempty (M.lookup tag tagMap)) tags
+    let hasAllTags :: S.Set (FilePath, FType)
+          = foldr' S.intersection (fold allTaggedFiles) $ allTaggedFiles
+    log ("found tagged: " <> show hasAllTags)
     pure . Right
-        $ [(".", dirStat ctx), ("..", dirStat ctx)] <> (second (toStat ctx) <$> tagFiles)
+        $ [(".", dirStat ctx), ("..", dirStat ctx)] <> (second (toStat ctx) <$> S.toList hasAllTags)
 
 toStat ::  FuseContext -> FType -> FileStat
 toStat ctx Tag = dirStat ctx
 toStat ctx File = fileStat ctx
-
--- readTag "/" = do
-
---     ctx <- liftIO $ getFuseContext
---     return $ Right [(".",          dirStat  ctx)
---                    ,("..",         dirStat  ctx)
---                    ,(helloName,    fileStat ctx)
---                    ]
---     where (_:helloName) = helloPath
--- readTag _ = return (Left (eNOENT))
 
 helloOpen :: FilePath -> OpenMode -> OpenFileFlags -> FilesM (Either Errno HT)
 helloOpen path mode flags

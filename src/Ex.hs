@@ -28,6 +28,10 @@ import qualified Data.Set as S
 import Data.Bifunctor
 import System.FilePath.Lens
 import System.FilePath.Posix
+import System.Environment
+import System.Exit
+import System.IO
+import System.Directory
 import Data.Maybe
 import Control.Applicative
 
@@ -41,9 +45,6 @@ import System.Fuse
 type HT = ()
 
 type TagPath = String
-
-realFSRoot :: FilePath
-realFSRoot = "/Users/chris/realFS"
 
 data BetterFuseOps fh m = BetterFuseOps  {
         mfuseGetFileStat :: FilePath -> m (Either Errno FileStat),
@@ -81,13 +82,13 @@ data BetterFuseOps fh m = BetterFuseOps  {
 newtype FilesM a = FilesM {runFilesM :: ReaderT Env (StateT TagMap IO) a }
     deriving newtype (Functor, Applicative, Monad, MonadState TagMap, MonadIO, MonadReader Env)
 
-transformOps :: BetterFuseOps fh FilesM -> IO (FuseOperations fh)
-transformOps BetterFuseOps{..} = do
+transformOps :: String -> BetterFuseOps fh FilesM -> IO (FuseOperations fh)
+transformOps rootFS BetterFuseOps{..} = do
     filesRef <- newFiles
-    let wrap1 act a = wrapState filesRef $ act a
-    let wrap2 act a b = wrapState filesRef $ act a b
-    let wrap3 act a b c = wrapState filesRef $ act a b c
-    let wrap4 act a b c d = wrapState filesRef $ act a b c d
+    let wrap1 act a = wrapState rootFS filesRef $ act a
+    let wrap2 act a b = wrapState rootFS filesRef $ act a b
+    let wrap3 act a b c = wrapState rootFS filesRef $ act a b c
+    let wrap4 act a b c d = wrapState rootFS filesRef $ act a b c d
     return $
         defaultFuseOps { fuseGetFileStat = wrap1 mfuseGetFileStat
                        , fuseOpen        = wrap3 mfuseOpen
@@ -97,10 +98,10 @@ transformOps BetterFuseOps{..} = do
                        , fuseGetFileSystemStats = wrap1 mfuseGetFileSystemStats
                        }
 
-wrapState :: IORef TagMap -> FilesM a -> IO a
-wrapState ref m = do
+wrapState :: String -> IORef TagMap -> FilesM a -> IO a
+wrapState rootFS ref m = do
     files <- readIORef ref
-    let env = Env realFSRoot
+    let env = Env rootFS
     (a, files') <- flip runStateT files . flip runReaderT env $ runFilesM m
     writeIORef ref files'
     return a
@@ -110,8 +111,15 @@ newFiles = newIORef starterFS
 
 main :: IO ()
 main = do
-    fsOps <- transformOps helloFSOps
-    fuseMain fsOps (\e -> debugS "Error" e >> defaultExceptionHandler e)
+    prog <- getProgName
+    (rootfs, args) <- getArgs >>= \case
+        (rootfs:args) -> do
+            exists <- doesDirectoryExist rootfs
+            when (not exists) $ hPutStrLn stderr ("Bad file root: " <> rootfs) >> exitFailure
+            return (rootfs, args)
+        args -> hPutStrLn stderr "usage: ffs <files> <mount point>" >> exitFailure
+    fsOps <- transformOps rootfs helloFSOps
+    fuseRun prog args fsOps (\e -> debugS "Error" e >> defaultExceptionHandler e)
 
 helloFSOps :: BetterFuseOps HT FilesM
 helloFSOps = BetterFuseOps { mfuseGetFileStat = ffsGetFileStat
@@ -168,17 +176,13 @@ fileOpen path mode _flags = do
 ffsReadFile :: FilePath -> HT -> ByteCount -> FileOffset -> FilesM (Either Errno B.ByteString)
 ffsReadFile  path _ byteCount offset = do
     debugS "loading " path
-    debugS "loading from" (realFSRoot </> (path ^. filename))
-    liftIO $ (Right <$> getBytes) <|> pure (Left eNOENT)
+    debugS "loading from" (path ^. filename)
+    fsRoot <- view realRoot
+    liftIO $ (Right <$> getBytes fsRoot) <|> pure (Left eNOENT)
   where
-    getBytes = do
-        fileContents <- BS.readFile (realFSRoot </> (path ^. filename))
+    getBytes fsRoot = do
+        fileContents <- BS.readFile (fsRoot </> (path ^. filename))
         return $ BS.take (fromIntegral byteCount) $ BS.drop (fromIntegral offset) fileContents
-
--- ffsReadFile path _ byteCount offset
---     | path == helloPath =
---         return $ Right $ B.take (fromIntegral byteCount) $ B.drop (fromIntegral offset) helloString
---     | otherwise         = return $ Left eNOENT
 
 helloGetFileSystemStats :: String -> FilesM (Either Errno FileSystemStats)
 helloGetFileSystemStats str =

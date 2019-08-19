@@ -29,6 +29,7 @@ dependencies:
 - lens
 - filepath
 - ixset
+- directory
 
 library:
   source-dirs: src

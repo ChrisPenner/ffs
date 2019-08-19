@@ -1,10 +1,13 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TupleSections #-}
 module Ops where
 
 import Control.Lens
 import Tags
 import Control.Monad.State
+import Control.Monad.Reader
 import System.FilePath.Lens
 import System.FilePath.Posix
 import Data.IxSet
@@ -14,11 +17,14 @@ import System.Posix.Files
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as B
 
+newtype Env = Env {_realRoot :: String}
+makeLenses ''Env
+
 filesForTags :: (MonadState TagMap m, MonadIO m) =>  FilePath -> m TagMap
 filesForTags tagPath = do
     let tags = splitDirectories tagPath
     tagMap <- get
-    debugReturn ("Files for tag path: " <> tagPath) $ tagMap @* (Tag <$> tags)
+    return $ tagMap @* (Tag <$> tags)
 
 fileFromPath :: (MonadState TagMap m, MonadIO m) => FilePath -> m (Maybe TFile)
 fileFromPath "/" = do
@@ -46,16 +52,42 @@ debugS :: (Show a, MonadIO m) => String -> a -> m ()
 debugS s a = do
     liftIO $ appendFile "/Users/chris/fuse.log" (s <> ": " <> show a <> "\n")
 
-nameStat :: FuseContext -> TFile -> (String, FileStat)
-nameStat ctx f = (view (name . to unName) f, statFile ctx f)
-
-statFile ::  FuseContext -> TFile -> FileStat
-statFile ctx (_fileType -> TypeTag) = dirStat ctx
-statFile ctx (_fileType -> TypeFile) = fileStat ctx
+nameStat :: (MonadReader Env m, MonadIO m) => FuseContext -> TFile -> m (String, FileStat)
+nameStat ctx f = (view (name . to unName) f,) <$> statFile ctx f
 
 
-dirStat :: FuseContext -> FileStat
-dirStat ctx = FileStat { statEntryType = Directory
+-- statFile ::  FuseContext -> TFile -> FileStat
+-- statFile ctx (_fileType -> TypeTag) = dirStat ctx
+-- statFile ctx (_fileType -> TypeFile) = fileStat ctx
+
+
+statFile :: (MonadReader Env m, MonadIO m) => FuseContext -> TFile -> m FileStat
+statFile ctx (_fileType -> TypeTag) = pure $ defaultDirStat ctx
+statFile ctx file = do
+    rootPath <- view realRoot
+    fileStats <- liftIO $ getFileStatus (rootPath </> file ^. name . to unName)
+    return $ FileStat
+             { statEntryType        = statusType fileStats
+             , statFileMode         = fileMode fileStats
+             , statLinkCount        = linkCount fileStats
+             , statFileOwner        = fileOwner fileStats
+             , statFileGroup        = fileGroup fileStats
+             , statSpecialDeviceID  = specialDeviceID fileStats
+             , statFileSize         = fileSize fileStats
+             , statBlocks           = fromIntegral . max 1 . ceiling $ (fromIntegral (fileSize fileStats) / 512) -- size in 512 byte blocks
+             , statAccessTime       = accessTime fileStats
+             , statModificationTime = modificationTime fileStats
+             , statStatusChangeTime = statusChangeTime fileStats
+             }
+
+statusType :: FileStatus -> EntryType
+statusType fs
+  | isDirectory fs = Directory
+  | isRegularFile fs = RegularFile
+  | otherwise = error "unknown filetype"
+
+defaultDirStat :: FuseContext -> FileStat
+defaultDirStat ctx = FileStat { statEntryType = Directory
                        , statFileMode = foldr1 unionFileModes
                                           [ ownerReadMode
                                           , ownerExecuteMode
@@ -68,32 +100,27 @@ dirStat ctx = FileStat { statEntryType = Directory
                        , statFileOwner = fuseCtxUserID ctx
                        , statFileGroup = fuseCtxGroupID ctx
                        , statSpecialDeviceID = 0
-                       , statFileSize = 4096
-                       , statBlocks = 1
+                       , statFileSize = 4096 -- size in bytes
+                       , statBlocks = 1 -- size in 512-byte blocks
                        , statAccessTime = 0
                        , statModificationTime = 0
                        , statStatusChangeTime = 0
                        }
 
-fileStat :: FuseContext -> FileStat
-fileStat ctx = FileStat { statEntryType = RegularFile
-                        , statFileMode = foldr1 unionFileModes
-                                           [ ownerReadMode
-                                           , groupReadMode
-                                           , otherReadMode
-                                           ]
-                        , statLinkCount = 1
-                        , statFileOwner = fuseCtxUserID ctx
-                        , statFileGroup = fuseCtxGroupID ctx
-                        , statSpecialDeviceID = 0
-                        , statFileSize = fromIntegral $ B.length helloString -- Do a real filesize
-                        , statBlocks = 1
-                        , statAccessTime = 0
-                        , statModificationTime = 0
-                        , statStatusChangeTime = 0
-                        }
-
-
-helloString :: B.ByteString
-helloString = B.pack "Hello World, HFuse!\n"
-
+-- fileStat :: FuseContext -> FileStat
+-- fileStat ctx = FileStat { statEntryType = RegularFile
+--                         , statFileMode = foldr1 unionFileModes
+--                                            [ ownerReadMode
+--                                            , groupReadMode
+--                                            , otherReadMode
+--                                            ]
+--                         , statLinkCount = 1
+--                         , statFileOwner = fuseCtxUserID ctx
+--                         , statFileGroup = fuseCtxGroupID ctx
+--                         , statSpecialDeviceID = 0
+--                         , statFileSize = fromIntegral $ B.length "" -- Do a real filesize
+--                         , statBlocks = 1
+--                         , statAccessTime = 0
+--                         , statModificationTime = 0
+--                         , statStatusChangeTime = 0
+--                         }

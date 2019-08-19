@@ -21,6 +21,7 @@ import System.Posix.IO
 import Data.Foldable
 import Data.IORef
 import Control.Monad.State
+import Control.Monad.Reader
 import qualified Data.ByteString as BS
 import qualified Data.Map as M
 import qualified Data.Set as S
@@ -77,8 +78,8 @@ data BetterFuseOps fh m = BetterFuseOps  {
         -- fuseDestroy :: IO ()
       }
 
-newtype FilesM a = FilesM {runFilesM :: StateT TagMap IO a }
-    deriving newtype (Functor, Applicative, Monad, MonadState TagMap, MonadIO)
+newtype FilesM a = FilesM {runFilesM :: ReaderT Env (StateT TagMap IO) a }
+    deriving newtype (Functor, Applicative, Monad, MonadState TagMap, MonadIO, MonadReader Env)
 
 transformOps :: BetterFuseOps fh FilesM -> IO (FuseOperations fh)
 transformOps BetterFuseOps{..} = do
@@ -99,7 +100,8 @@ transformOps BetterFuseOps{..} = do
 wrapState :: IORef TagMap -> FilesM a -> IO a
 wrapState ref m = do
     files <- readIORef ref
-    (a, files') <- flip runStateT files $ runFilesM m
+    let env = Env realFSRoot
+    (a, files') <- flip runStateT files . flip runReaderT env $ runFilesM m
     writeIORef ref files'
     return a
 
@@ -112,70 +114,59 @@ main = do
     fuseMain fsOps (\e -> debugS "Error" e >> defaultExceptionHandler e)
 
 helloFSOps :: BetterFuseOps HT FilesM
-helloFSOps = BetterFuseOps { mfuseGetFileStat = helloGetFileStat
+helloFSOps = BetterFuseOps { mfuseGetFileStat = ffsGetFileStat
                            , mfuseOpen        = fileOpen
-                           , mfuseRead        = helloRead
+                           , mfuseRead        = ffsReadFile
                            , mfuseOpenDirectory = openTag
                            , mfuseReadDirectory = taggedWith
                            , mfuseGetFileSystemStats = helloGetFileSystemStats
-                           , mfuseInit = helloInit
+                           , mfuseInit = initFFS
                            }
 
+initFFS :: FilesM ()
+initFFS = debug "Init!"
 
-helloInit :: FilesM ()
-helloInit = debug "Init!"
-
-helloPath :: FilePath
-helloPath = "/hello"
-
-helloGetFileStat :: FilePath -> FilesM (Either Errno FileStat)
--- helloGetFileStat "/" = do
---     debugS "reading file stat" "/"
---     ctx <- liftIO getFuseContext
---     debug "success"
---     return . Right $ (dirStat ctx)
-helloGetFileStat filePath = do
+ffsGetFileStat :: FilePath -> FilesM (Either Errno FileStat)
+ffsGetFileStat filePath = do
     debugS "reading file stat" filePath
     ctx <- liftIO getFuseContext
     fileFromPath filePath >>= \case
-        Just f -> return $ Right (statFile ctx f)
+        Just f  -> Right <$> statFile ctx f
         Nothing -> return $ Left eNOENT
 
 openTag :: TagPath -> FilesM Errno
 openTag tagPath = do
     debugS "opening tag" tagPath
     exists <- isJust <$> fileFromPath tagPath
-    if exists then debug "Success" >> return eOK
-              else debug "Failure" >> return eNOENT
+    if exists
+        then debug "Success" >> return eOK
+        else debug "Failure" >> return eNOENT
 
 taggedWith :: TagPath -> FilesM (Either Errno [(FilePath, FileStat)])
--- taggedWith "/" = do
---     ctx <- liftIO getFuseContext
---     files <- filesForTags "/"
---     debugS "SPECIAL" (nameStat ctx <$> IS.toList files)
---     return . Right $ [(".", dirStat ctx), ("..", dirStat ctx)] <> (nameStat ctx <$> IS.toList files)
 taggedWith tagPath = do
     files <- filesForTags tagPath
     debug ("found tagged with " <> tagPath <> ": " <> show files)
     ctx <- liftIO $ getFuseContext
-    let dirs = defaultDirs ctx <> (nameStat ctx <$> IS.toList files)
+    foundFiles <- traverse (nameStat ctx) (IS.toList files)
+    let dirs = defaultDirs ctx <> foundFiles
     debugS "listing dirs" dirs
-    pure . Right $  dirs
+    pure . Right $ dirs
   where
-    defaultDirs ctx = [(".", dirStat ctx), ("..", dirStat ctx)]
+    defaultDirs ctx = [(".", defaultDirStat ctx), ("..", defaultDirStat ctx)]
 
 
 fileOpen :: FilePath -> OpenMode -> OpenFileFlags -> FilesM (Either Errno HT)
 fileOpen path mode _flags = do
     debugS "opening: " path
     file <- fileFromPath path
+    debugS "file found" file
     case (file, mode) of
         (Nothing, _) -> return (Left eNOENT)
-        (_,  ReadOnly) -> return (Left eACCES)
-        _ -> return (Right ())
+        (_,  ReadOnly) -> return (Right ())
+        _ -> return (Left eACCES)
 
-helloRead :: FilePath -> HT -> ByteCount -> FileOffset -> FilesM (Either Errno B.ByteString)
-helloRead  path _ byteCount offset = do
+ffsReadFile :: FilePath -> HT -> ByteCount -> FileOffset -> FilesM (Either Errno B.ByteString)
+ffsReadFile  path _ byteCount offset = do
     debugS "loading " path
     debugS "loading from" (realFSRoot </> (path ^. filename))
     liftIO $ (Right <$> getBytes) <|> pure (Left eNOENT)
@@ -184,7 +175,7 @@ helloRead  path _ byteCount offset = do
         fileContents <- BS.readFile (realFSRoot </> (path ^. filename))
         return $ BS.take (fromIntegral byteCount) $ BS.drop (fromIntegral offset) fileContents
 
--- helloRead path _ byteCount offset
+-- ffsReadFile path _ byteCount offset
 --     | path == helloPath =
 --         return $ Right $ B.take (fromIntegral byteCount) $ B.drop (fromIntegral offset) helloString
 --     | otherwise         = return $ Left eNOENT

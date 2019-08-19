@@ -27,17 +27,17 @@ data TFile =
     deriving (Show, Eq, Ord)
 
 newTag :: String -> [Tag] -> TFile
-newTag s = TFile TypeTag (Name s)
+newTag s tags = TFile TypeTag (Name s) (Tag "/" : tags)
 
 newFile :: String -> [Tag] -> TFile
-newFile s = TFile TypeFile (Name s)
+newFile s tags = TFile TypeFile (Name s) (Tag "/" : tags)
 
 makeLenses ''TFile
 
 instance Indexable TFile where
   empty = ixSet [ ixFun (pure . _fileType)
                 , ixFun (pure . _name)
-                , ixFun (\f -> [Tag "/"] <> _tags f)
+                , ixFun (\f -> _tags f)
                 ]
 
 type TagMap = IxSet TFile

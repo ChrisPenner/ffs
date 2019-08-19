@@ -129,11 +129,11 @@ helloPath :: FilePath
 helloPath = "/hello"
 
 helloGetFileStat :: FilePath -> FilesM (Either Errno FileStat)
-helloGetFileStat "/" = do
-    debugS "reading file stat" "/"
-    ctx <- liftIO getFuseContext
-    debug "success"
-    return . Right $ (dirStat ctx)
+-- helloGetFileStat "/" = do
+--     debugS "reading file stat" "/"
+--     ctx <- liftIO getFuseContext
+--     debug "success"
+--     return . Right $ (dirStat ctx)
 helloGetFileStat filePath = do
     debugS "reading file stat" filePath
     ctx <- liftIO getFuseContext
@@ -149,11 +149,11 @@ openTag tagPath = do
               else debug "Failure" >> return eNOENT
 
 taggedWith :: TagPath -> FilesM (Either Errno [(FilePath, FileStat)])
-taggedWith "/" = do
-    ctx <- liftIO getFuseContext
-    files <- filesForTags "/"
-    debugS "SPECIAL" (nameStat ctx <$> IS.toList files)
-    return . Right $ [(".", dirStat ctx), ("..", dirStat ctx)] <> (nameStat ctx <$> IS.toList files)
+-- taggedWith "/" = do
+--     ctx <- liftIO getFuseContext
+--     files <- filesForTags "/"
+--     debugS "SPECIAL" (nameStat ctx <$> IS.toList files)
+--     return . Right $ [(".", dirStat ctx), ("..", dirStat ctx)] <> (nameStat ctx <$> IS.toList files)
 taggedWith tagPath = do
     files <- filesForTags tagPath
     debug ("found tagged with " <> tagPath <> ": " <> show files)
@@ -208,5 +208,5 @@ starterFS =
     IS.fromList [ newTag "photos" []
                 , newTag "vacation" [Tag "photos"]
                 , newFile "sandy-beach.png" [Tag "photos", Tag "vacation"]
-                , newTag "/" []
+                , TFile TypeTag (Name "/") []
                 ]

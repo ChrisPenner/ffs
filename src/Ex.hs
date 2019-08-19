@@ -5,9 +5,13 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE MultiWayIf #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE ViewPatterns #-}
 module Ex where
 
-import Prelude hiding (log)
+import Prelude hiding (debug)
 import qualified Data.ByteString.Char8 as B
 import Foreign.C.Error
 import Control.Lens
@@ -24,14 +28,21 @@ import Data.Bifunctor
 import System.FilePath.Lens
 import System.FilePath.Posix
 import Data.Maybe
+import Control.Applicative
+
+
+import Tags
+import Ops
+import Data.IxSet as IS
 
 import System.Fuse
 
 type HT = ()
 
 type TagPath = String
-data FType = Tag | File
-    deriving (Show, Eq, Ord)
+
+realFSRoot :: FilePath
+realFSRoot = "/Users/chris/realFS"
 
 data BetterFuseOps fh m = BetterFuseOps  {
         mfuseGetFileStat :: FilePath -> m (Either Errno FileStat),
@@ -66,16 +77,12 @@ data BetterFuseOps fh m = BetterFuseOps  {
         -- fuseDestroy :: IO ()
       }
 
-newtype Files = Files {unFiles :: (M.Map String (S.Set (FilePath, FType)))}
-makeLensesFor [("unFiles", "files")] ''Files
-
-newtype FilesM a = FilesM {runFilesM :: StateT Files IO a }
-    deriving newtype (Functor, Applicative, Monad, MonadState Files, MonadIO)
+newtype FilesM a = FilesM {runFilesM :: StateT TagMap IO a }
+    deriving newtype (Functor, Applicative, Monad, MonadState TagMap, MonadIO)
 
 transformOps :: BetterFuseOps fh FilesM -> IO (FuseOperations fh)
 transformOps BetterFuseOps{..} = do
     filesRef <- newFiles
-    exampleTags filesRef
     let wrap1 act a = wrapState filesRef $ act a
     let wrap2 act a b = wrapState filesRef $ act a b
     let wrap3 act a b c = wrapState filesRef $ act a b c
@@ -89,37 +96,24 @@ transformOps BetterFuseOps{..} = do
                        , fuseGetFileSystemStats = wrap1 mfuseGetFileSystemStats
                        }
 
-exampleTags :: IORef Files -> IO ()
-exampleTags ref = do
-    modifyIORef ref
-                (files
-                 <>~ M.fromList [ ( "photos"
-                                  , S.fromList [("pic.jpg", File), ("image.png", File), ("sandy-beach.png", File)]
-                                  )
-                                , ("movies", S.fromList [("anime.mkv", File)])
-                                , ("vacation"
-                                  , S.fromList [("location", Tag), ("sandy-beach.png", File)]
-                                  )
-                                ])
-
-wrapState :: IORef Files -> FilesM a -> IO a
+wrapState :: IORef TagMap -> FilesM a -> IO a
 wrapState ref m = do
     files <- readIORef ref
     (a, files') <- flip runStateT files $ runFilesM m
     writeIORef ref files'
     return a
 
-newFiles :: IO (IORef Files)
-newFiles = newIORef $ Files M.empty
+newFiles :: IO (IORef TagMap)
+newFiles = newIORef starterFS
 
 main :: IO ()
 main = do
     fsOps <- transformOps helloFSOps
-    fuseMain fsOps (\e -> logS e >> defaultExceptionHandler e)
+    fuseMain fsOps (\e -> debugS "Error" e >> defaultExceptionHandler e)
 
 helloFSOps :: BetterFuseOps HT FilesM
 helloFSOps = BetterFuseOps { mfuseGetFileStat = helloGetFileStat
-                           , mfuseOpen        = helloOpen
+                           , mfuseOpen        = fileOpen
                            , mfuseRead        = helloRead
                            , mfuseOpenDirectory = openTag
                            , mfuseReadDirectory = taggedWith
@@ -129,110 +123,71 @@ helloFSOps = BetterFuseOps { mfuseGetFileStat = helloGetFileStat
 
 
 helloInit :: FilesM ()
-helloInit = log "Init!"
-
-helloString :: B.ByteString
-helloString = B.pack "Hello World, HFuse!\n"
+helloInit = debug "Init!"
 
 helloPath :: FilePath
 helloPath = "/hello"
 
-dirStat :: FuseContext -> FileStat
-dirStat ctx = FileStat { statEntryType = Directory
-                       , statFileMode = foldr1 unionFileModes
-                                          [ ownerReadMode
-                                          , ownerExecuteMode
-                                          , groupReadMode
-                                          , groupExecuteMode
-                                          , otherReadMode
-                                          , otherExecuteMode
-                                          ]
-                       , statLinkCount = 2
-                       , statFileOwner = fuseCtxUserID ctx
-                       , statFileGroup = fuseCtxGroupID ctx
-                       , statSpecialDeviceID = 0
-                       , statFileSize = 4096
-                       , statBlocks = 1
-                       , statAccessTime = 0
-                       , statModificationTime = 0
-                       , statStatusChangeTime = 0
-                       }
-
-fileStat :: FuseContext -> FileStat
-fileStat ctx = FileStat { statEntryType = RegularFile
-                        , statFileMode = foldr1 unionFileModes
-                                           [ ownerReadMode
-                                           , groupReadMode
-                                           , otherReadMode
-                                           ]
-                        , statLinkCount = 1
-                        , statFileOwner = fuseCtxUserID ctx
-                        , statFileGroup = fuseCtxGroupID ctx
-                        , statSpecialDeviceID = 0
-                        , statFileSize = fromIntegral $ B.length helloString
-                        , statBlocks = 1
-                        , statAccessTime = 0
-                        , statModificationTime = 0
-                        , statStatusChangeTime = 0
-                        }
-
 helloGetFileStat :: FilePath -> FilesM (Either Errno FileStat)
-helloGetFileStat _ = do
+helloGetFileStat "/" = do
+    debugS "reading file stat" "/"
     ctx <- liftIO getFuseContext
-    return $ Right $ dirStat ctx
--- helloGetFileStat path | path == helloPath = do
---     ctx <- liftIO getFuseContext
---     return $ Right $ fileStat ctx
--- helloGetFileStat _ =
---     return $ Left eNOENT
+    debug "success"
+    return . Right $ (dirStat ctx)
+helloGetFileStat filePath = do
+    debugS "reading file stat" filePath
+    ctx <- liftIO getFuseContext
+    fileFromPath filePath >>= \case
+        Just f -> return $ Right (statFile ctx f)
+        Nothing -> return $ Left eNOENT
 
 openTag :: TagPath -> FilesM Errno
-openTag "/" = return eOK
 openTag tagPath = do
-    let tag = tagPath ^. basename
-    exists <- uses files (has (ix tag))
-    if exists then return eOK
-              else return eNOENT
+    debugS "opening tag" tagPath
+    exists <- isJust <$> fileFromPath tagPath
+    if exists then debug "Success" >> return eOK
+              else debug "Failure" >> return eNOENT
 
 taggedWith :: TagPath -> FilesM (Either Errno [(FilePath, FileStat)])
 taggedWith "/" = do
-    log ("reading: " <> "/")
-    ctx <- liftIO $ getFuseContext
-    tagFiles <- gets (M.keys . unFiles)
-    log ("found tagged: " <> show tagFiles)
-    pure . Right
-        $ [(".", dirStat ctx), ("..", dirStat ctx)] <> ((, fileStat ctx) <$> tagFiles)
-
+    ctx <- liftIO getFuseContext
+    files <- filesForTags "/"
+    debugS "SPECIAL" (nameStat ctx <$> IS.toList files)
+    return . Right $ [(".", dirStat ctx), ("..", dirStat ctx)] <> (nameStat ctx <$> IS.toList files)
 taggedWith tagPath = do
-    let tags = tail $ splitDirectories tagPath -- Strip of leading "/"
-    log ("reading: " <> show tags)
+    files <- filesForTags tagPath
+    debug ("found tagged with " <> tagPath <> ": " <> show files)
     ctx <- liftIO $ getFuseContext
-    tagMap <- use files
-    let allTaggedFiles :: [S.Set (FilePath, FType)]
-          = fmap (\tag -> fromMaybe mempty (M.lookup tag tagMap)) tags
-    let hasAllTags :: S.Set (FilePath, FType)
-          = foldr' S.intersection (fold allTaggedFiles) $ allTaggedFiles
-    log ("found tagged: " <> show hasAllTags)
-    pure . Right
-        $ [(".", dirStat ctx), ("..", dirStat ctx)] <> (second (toStat ctx) <$> S.toList hasAllTags)
+    let dirs = defaultDirs ctx <> (nameStat ctx <$> IS.toList files)
+    debugS "listing dirs" dirs
+    pure . Right $  dirs
+  where
+    defaultDirs ctx = [(".", dirStat ctx), ("..", dirStat ctx)]
 
-toStat ::  FuseContext -> FType -> FileStat
-toStat ctx Tag = dirStat ctx
-toStat ctx File = fileStat ctx
 
-helloOpen :: FilePath -> OpenMode -> OpenFileFlags -> FilesM (Either Errno HT)
-helloOpen path mode flags
-    | path == helloPath = case mode of
-                            ReadOnly -> return (Right ())
-                            _        -> return (Left eACCES)
-    | otherwise         = return (Left eNOENT)
-
+fileOpen :: FilePath -> OpenMode -> OpenFileFlags -> FilesM (Either Errno HT)
+fileOpen path mode _flags = do
+    debugS "opening: " path
+    file <- fileFromPath path
+    case (file, mode) of
+        (Nothing, _) -> return (Left eNOENT)
+        (_,  ReadOnly) -> return (Left eACCES)
+        _ -> return (Right ())
 
 helloRead :: FilePath -> HT -> ByteCount -> FileOffset -> FilesM (Either Errno B.ByteString)
-helloRead path _ byteCount offset
-    | path == helloPath =
-        return $ Right $ B.take (fromIntegral byteCount) $ B.drop (fromIntegral offset) helloString
-    | otherwise         = return $ Left eNOENT
+helloRead  path _ byteCount offset = do
+    debugS "loading " path
+    debugS "loading from" (realFSRoot </> (path ^. filename))
+    liftIO $ (Right <$> getBytes) <|> pure (Left eNOENT)
+  where
+    getBytes = do
+        fileContents <- BS.readFile (realFSRoot </> (path ^. filename))
+        return $ BS.take (fromIntegral byteCount) $ BS.drop (fromIntegral offset) fileContents
+
+-- helloRead path _ byteCount offset
+--     | path == helloPath =
+--         return $ Right $ B.take (fromIntegral byteCount) $ B.drop (fromIntegral offset) helloString
+--     | otherwise         = return $ Left eNOENT
 
 helloGetFileSystemStats :: String -> FilesM (Either Errno FileSystemStats)
 helloGetFileSystemStats str =
@@ -246,11 +201,12 @@ helloGetFileSystemStats str =
     , fsStatMaxNameLength = 255
     }
 
-log :: MonadIO m => String -> m ()
-log s = do
-    liftIO $ appendFile "/Users/chris/fuse.log" (s <> "\n")
+deriving instance Eq OpenMode
 
-
-logS :: (Show a, MonadIO m) => a -> m ()
-logS s = do
-    liftIO $ appendFile "/Users/chris/fuse.log" (show s <> "\n")
+starterFS :: IxSet TFile
+starterFS =
+    IS.fromList [ newTag "photos" []
+                , newTag "vacation" [Tag "photos"]
+                , newFile "sandy-beach.png" [Tag "photos", Tag "vacation"]
+                , newTag "/" []
+                ]

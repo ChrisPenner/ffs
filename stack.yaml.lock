@@ -11,6 +11,20 @@ packages:
       sha256: c2ffaef5c8141617e2ab6e5e6b71402da177262662914510d8f7c592a5327cb4
   original:
     hackage: HFuse-0.2.5.0@sha256:41620052c8029520634282b889bd64cf28f6b8524266290b1099c638d7e772a8,1929
+- completed:
+    hackage: ixset-1.1.1@sha256:b51a990fef4f8e82b0f508765a4a19b124df6cb320e64e841f9fc51d58b7ff74,1597
+    pantry-tree:
+      size: 388
+      sha256: 3843dc696f0c93fc6e73051a94455dc08136db684a05af3ad26424cfefdaf4ff
+  original:
+    hackage: ixset-1.1.1@sha256:b51a990fef4f8e82b0f508765a4a19b124df6cb320e64e841f9fc51d58b7ff74,1597
+- completed:
+    hackage: syb-with-class-0.6.1.10@sha256:4b2b866a0a2e34e84fd5c817581fb0aba83f2539777a33af44668956d5ec99e1,1528
+    pantry-tree:
+      size: 477
+      sha256: deb169bfdaa6a5be49ba84f1c3ed6f794d128618e70a280dcc3b16e196964930
+  original:
+    hackage: syb-with-class-0.6.1.10@sha256:4b2b866a0a2e34e84fd5c817581fb0aba83f2539777a33af44668956d5ec99e1,1528
 snapshots:
 - completed:
     size: 498402

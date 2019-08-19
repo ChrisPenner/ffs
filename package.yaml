@@ -28,6 +28,7 @@ dependencies:
 - mtl
 - lens
 - filepath
+- ixset
 
 library:
   source-dirs: src

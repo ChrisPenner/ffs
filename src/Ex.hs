@@ -9,6 +9,7 @@
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE PackageImports #-}
 module Ex where
 
 import Prelude hiding (debug)
@@ -34,49 +35,52 @@ import System.IO
 import System.Directory
 import Data.Maybe
 import Control.Applicative
-
-
-import Tags
-import Ops
 import Data.IxSet as IS
+import Data.Functor
+import "unix-bytestring" System.Posix.IO.ByteString (fdPread, fdPwrite)
+
+import Persist
+import Types
+import Ops
+import Util
 
 import System.Fuse
 
-type HT = ()
+type FfsFd = Fd
 
 type TagPath = String
 
 data BetterFuseOps fh m = BetterFuseOps  {
         mfuseGetFileStat :: FilePath -> m (Either Errno FileStat),
-        -- fuseReadSymbolicLink :: FilePath -> IO (Either Errno FilePath),
-        -- fuseCreateDevice :: FilePath -> EntryType -> FileMode
-        --                  -> DeviceID -> IO Errno,
-        -- fuseCreateDirectory :: FilePath -> FileMode -> IO Errno,
-        -- fuseRemoveLink :: FilePath -> IO Errno,
-        -- fuseRemoveDirectory :: FilePath -> IO Errno,
-        -- fuseCreateSymbolicLink :: FilePath -> FilePath -> IO Errno,
-        -- fuseRename :: FilePath -> FilePath -> IO Errno,
-        -- fuseCreateLink :: FilePath -> FilePath -> IO Errno,
-        -- fuseSetFileMode :: FilePath -> FileMode -> IO Errno,
-        -- fuseSetOwnerAndGroup :: FilePath -> UserID -> GroupID -> IO Errno,
-        -- fuseSetFileSize :: FilePath -> FileOffset -> IO Errno,
-        -- fuseSetFileTimes :: FilePath -> EpochTime -> EpochTime -> IO Errno,
+        -- mfuseReadSymbolicLink :: FilePath -> m (Either Errno FilePath),
+        -- mfuseCreateDevice :: FilePath -> EntryType -> FileMode
+        --                  -> DeviceID -> m Errno,
+        -- mfuseCreateDirectory :: FilePath -> FileMode -> m Errno,
+        -- mfuseRemoveLink :: FilePath -> m Errno,
+        -- mfuseRemoveDirectory :: FilePath -> m Errno,
+        -- mfuseCreateSymbolicLink :: FilePath -> FilePath -> m Errno,
+        -- mfuseRename :: FilePath -> FilePath -> m Errno,
+        -- mfuseCreateLink :: FilePath -> FilePath -> m Errno,
+        -- mfuseSetFileMode :: FilePath -> FileMode -> m Errno,
+        -- mfuseSetOwnerAndGroup :: FilePath -> UserID -> GroupID -> m Errno,
+        mfuseSetFileSize :: FilePath -> FileOffset -> m Errno,
+        -- mfuseSetFileTimes :: FilePath -> EpochTime -> EpochTime -> m Errno,
         mfuseOpen :: FilePath -> OpenMode -> OpenFileFlags -> m (Either Errno fh),
         mfuseRead :: FilePath -> fh -> ByteCount -> FileOffset
                  -> m (Either Errno B.ByteString),
-        -- fuseWrite :: FilePath -> fh -> B.ByteString -> FileOffset
-        --           -> IO (Either Errno ByteCount),
+        mfuseWrite :: FilePath -> fh -> B.ByteString -> FileOffset
+                  -> m (Either Errno ByteCount),
         mfuseGetFileSystemStats :: String -> m (Either Errno FileSystemStats),
-        -- fuseFlush :: FilePath -> fh -> IO Errno,
-        -- fuseRelease :: FilePath -> fh -> IO (),
-        -- fuseSynchronizeFile :: FilePath -> SyncType -> IO Errno,
+        mfuseFlush :: FilePath -> fh -> FilesM Errno,
+        mfuseRelease :: FilePath -> fh -> FilesM (),
+        mfuseSynchronizeFile :: FilePath -> SyncType -> FilesM Errno,
         mfuseOpenDirectory :: FilePath -> m Errno,
         mfuseReadDirectory :: FilePath -> m (Either Errno [(FilePath, FileStat)]),
-        -- fuseReleaseDirectory :: FilePath -> IO Errno,
-        -- fuseSynchronizeDirectory :: FilePath -> SyncType -> IO Errno,
-        -- fuseAccess :: FilePath -> Int -> IO Errno,
-        mfuseInit :: m ()
-        -- fuseDestroy :: IO ()
+        -- mfuseReleaseDirectory :: FilePath -> FilesM Errno,
+        -- mfuseSynchronizeDirectory :: FilePath -> SyncType -> FilesM Errno,
+        -- mfuseAccess :: FilePath -> Int -> FilesM Errno,
+        mfuseInit :: m (),
+        mfuseDestroy :: m ()
       }
 
 newtype FilesM a = FilesM {runFilesM :: ReaderT Env (StateT TagMap IO) a }
@@ -84,11 +88,12 @@ newtype FilesM a = FilesM {runFilesM :: ReaderT Env (StateT TagMap IO) a }
 
 transformOps :: String -> BetterFuseOps fh FilesM -> IO (FuseOperations fh)
 transformOps rootFS BetterFuseOps{..} = do
-    filesRef <- newFiles
-    let wrap1 act a = wrapState rootFS filesRef $ act a
-    let wrap2 act a b = wrapState rootFS filesRef $ act a b
-    let wrap3 act a b c = wrapState rootFS filesRef $ act a b c
-    let wrap4 act a b c d = wrapState rootFS filesRef $ act a b c d
+    filesRef <- loadIndex >>= newIORef
+    let wrap act = wrapState rootFS filesRef $ act
+    let wrap1 act = wrap . act
+    let wrap2 act = wrap1 . act
+    let wrap3 act = wrap2 . act
+    let wrap4 act = wrap3 . act
     return $
         defaultFuseOps { fuseGetFileStat = wrap1 mfuseGetFileStat
                        , fuseOpen        = wrap3 mfuseOpen
@@ -96,12 +101,20 @@ transformOps rootFS BetterFuseOps{..} = do
                        , fuseOpenDirectory = wrap1 mfuseOpenDirectory
                        , fuseReadDirectory = wrap1 mfuseReadDirectory
                        , fuseGetFileSystemStats = wrap1 mfuseGetFileSystemStats
+                       , fuseInit = wrap mfuseInit
+                       , fuseDestroy = wrap mfuseDestroy
+                       , fuseWrite = wrap4 mfuseWrite
+                       , fuseSetFileSize = wrap2 mfuseSetFileSize
+                       , fuseFlush = wrap2 mfuseFlush
+                       , fuseRelease = wrap2 mfuseRelease
+                       , fuseSynchronizeFile = wrap2 mfuseSynchronizeFile
                        }
 
 wrapState :: String -> IORef TagMap -> FilesM a -> IO a
 wrapState rootFS ref m = do
     files <- readIORef ref
-    let env = Env rootFS
+    persistDir <- getPersistenceDir
+    let env = Env rootFS persistDir
     (a, files') <- flip runStateT files . flip runReaderT env $ runFilesM m
     writeIORef ref files'
     return a
@@ -121,18 +134,29 @@ main = do
     fsOps <- transformOps rootfs helloFSOps
     fuseRun prog args fsOps (\e -> debugS "Error" e >> defaultExceptionHandler e)
 
-helloFSOps :: BetterFuseOps HT FilesM
+helloFSOps :: BetterFuseOps FfsFd FilesM
 helloFSOps = BetterFuseOps { mfuseGetFileStat = ffsGetFileStat
-                           , mfuseOpen        = fileOpen
+                           , mfuseOpen        = ffsOpen
                            , mfuseRead        = ffsReadFile
-                           , mfuseOpenDirectory = openTag
-                           , mfuseReadDirectory = taggedWith
-                           , mfuseGetFileSystemStats = helloGetFileSystemStats
+                           , mfuseOpenDirectory = ffsOpenDirectory
+                           , mfuseReadDirectory = ffsReadDirectory
+                           , mfuseGetFileSystemStats = getFileSystemStats
                            , mfuseInit = initFFS
+                           , mfuseDestroy = destroyFFS
+                           , mfuseWrite = ffsWriteFile
+                           , mfuseSetFileSize = ffsSetFileSize
+                           , mfuseFlush = ffsFlush
+                           , mfuseRelease = ffsRelease
+                           , mfuseSynchronizeFile = ffsSynchronizeFile
                            }
 
+-- Fix this dumb assumption
 initFFS :: FilesM ()
-initFFS = debug "Init!"
+initFFS = return ()
+
+-- Fix this dumb assumption
+destroyFFS :: FilesM ()
+destroyFFS = persistIndex
 
 ffsGetFileStat :: FilePath -> FilesM (Either Errno FileStat)
 ffsGetFileStat filePath = do
@@ -142,16 +166,16 @@ ffsGetFileStat filePath = do
         Just f  -> Right <$> statFile ctx f
         Nothing -> return $ Left eNOENT
 
-openTag :: TagPath -> FilesM Errno
-openTag tagPath = do
+ffsOpenDirectory :: TagPath -> FilesM Errno
+ffsOpenDirectory tagPath = do
     debugS "opening tag" tagPath
     exists <- isJust <$> fileFromPath tagPath
     if exists
         then debug "Success" >> return eOK
         else debug "Failure" >> return eNOENT
 
-taggedWith :: TagPath -> FilesM (Either Errno [(FilePath, FileStat)])
-taggedWith tagPath = do
+ffsReadDirectory :: TagPath -> FilesM (Either Errno [(FilePath, FileStat)])
+ffsReadDirectory tagPath = do
     files <- filesForTags tagPath
     debug ("found tagged with " <> tagPath <> ": " <> show files)
     ctx <- liftIO $ getFuseContext
@@ -163,29 +187,43 @@ taggedWith tagPath = do
     defaultDirs ctx = [(".", defaultDirStat ctx), ("..", defaultDirStat ctx)]
 
 
-fileOpen :: FilePath -> OpenMode -> OpenFileFlags -> FilesM (Either Errno HT)
-fileOpen path mode _flags = do
+ffsOpen :: FilePath -> OpenMode -> OpenFileFlags -> FilesM (Either Errno Fd)
+ffsOpen path mode flags = do
     debugS "opening: " path
-    file <- fileFromPath path
-    debugS "file found" file
-    case (file, mode) of
-        (Nothing, _) -> return (Left eNOENT)
-        (_,  ReadOnly) -> return (Right ())
-        _ -> return (Left eACCES)
+    realFilePathM <- fileFromPath path >>= traverse getRealFilePath
+    debugS "file found" realFilePathM
+    case realFilePathM of
+        (Just realFilePath) -> do
+            Right <$> (liftIO $ openFd realFilePath mode Nothing flags)
+        Nothing -> return (Left eNOENT)
 
-ffsReadFile :: FilePath -> HT -> ByteCount -> FileOffset -> FilesM (Either Errno B.ByteString)
-ffsReadFile  path _ byteCount offset = do
-    debugS "loading " path
-    debugS "loading from" (path ^. filename)
-    fsRoot <- view realRoot
-    liftIO $ (Right <$> getBytes fsRoot) <|> pure (Left eNOENT)
-  where
-    getBytes fsRoot = do
-        fileContents <- BS.readFile (fsRoot </> (path ^. filename))
-        return $ BS.take (fromIntegral byteCount) $ BS.drop (fromIntegral offset) fileContents
+ffsReadFile :: FilePath -> FfsFd -> ByteCount -> FileOffset -> FilesM (Either Errno B.ByteString)
+ffsReadFile  path fd byteCount offset = do
+    debugS "readFile " path
+    liftIO $ (Right <$> fdPread fd byteCount offset) -- TODO add better error handling
 
-helloGetFileSystemStats :: String -> FilesM (Either Errno FileSystemStats)
-helloGetFileSystemStats str =
+ffsWriteFile :: FilePath -> FfsFd -> BS.ByteString -> FileOffset -> FilesM (Either Errno ByteCount)
+ffsWriteFile  path fd contents offset = do
+    debugS "writeFile " path
+    liftIO $ (Right <$> fdPwrite fd contents offset) -- TODO add better error handling
+
+ffsSetFileSize :: FilePath -> FileOffset -> FilesM Errno
+ffsSetFileSize  path offset = do
+    debugS "setFileSize" path
+    realFilePath <- getRealFilePathFromTagPath path
+    (liftIO $ setFileSize realFilePath offset) $> eOK
+
+ffsFlush :: FilePath -> FfsFd -> FilesM Errno
+ffsFlush path fd = return eOK -- TODO do something
+
+ffsRelease :: FilePath -> FfsFd -> FilesM ()
+ffsRelease path fd = return ()
+
+ffsSynchronizeFile :: FilePath -> SyncType -> FilesM Errno
+ffsSynchronizeFile path _ = return eOK -- TODO do something
+
+getFileSystemStats :: String -> FilesM (Either Errno FileSystemStats)
+getFileSystemStats str =
   return $ Right $ FileSystemStats
     { fsStatBlockSize = 512
     , fsStatBlockCount = 1

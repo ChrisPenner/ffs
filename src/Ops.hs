@@ -5,7 +5,6 @@
 module Ops where
 
 import Control.Lens
-import Tags
 import Control.Monad.State
 import Control.Monad.Reader
 import System.FilePath.Lens
@@ -17,8 +16,19 @@ import System.Posix.Files
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as B
 
-newtype Env = Env {_realRoot :: String}
-makeLenses ''Env
+import Types
+import Util
+
+getRealFilePath :: MonadReader Env m => TFile -> m FilePath
+getRealFilePath tfile = do
+    fsRoot <- view realRoot
+    return $ fsRoot </> (tfile ^. name . to unName)
+
+getRealFilePathFromTagPath :: MonadReader Env m => FilePath -> m FilePath
+getRealFilePathFromTagPath tagPath = do
+    fsRoot <- view realRoot
+    return $ fsRoot </> (tagPath ^. filename)
+
 
 filesForTags :: (MonadState TagMap m, MonadIO m) =>  FilePath -> m TagMap
 filesForTags tagPath = do
@@ -38,19 +48,6 @@ fileFromPath filePath = do
     result <- getOne . getEQ (filePath ^. filename . to Name) <$> filesForTags (filePath ^. directory)
     debugS "got" result
     return result
-
-debug :: MonadIO m => String -> m ()
-debug s = do
-    liftIO $ appendFile "/Users/chris/fuse.log" (s <> "\n")
-
-debugReturn :: (Show a, MonadIO m) => String -> a -> m a
-debugReturn s a = do
-    liftIO $ appendFile "/Users/chris/fuse.log" (s <> ": " <> show a <> "\n")
-    return a
-
-debugS :: (Show a, MonadIO m) => String -> a -> m ()
-debugS s a = do
-    liftIO $ appendFile "/Users/chris/fuse.log" (s <> ": " <> show a <> "\n")
 
 nameStat :: (MonadReader Env m, MonadIO m) => FuseContext -> TFile -> m (String, FileStat)
 nameStat ctx f = (view (name . to unName) f,) <$> statFile ctx f

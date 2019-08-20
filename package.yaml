@@ -30,6 +30,9 @@ dependencies:
 - filepath
 - ixset
 - directory
+- cereal
+- safecopy
+- unix-bytestring
 
 library:
   source-dirs: src

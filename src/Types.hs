@@ -1,22 +1,34 @@
 {-# LANGUAGE TemplateHaskell #-}
-module Tags where
+{-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DeriveAnyClass #-}
+module Types where
 
 import Control.Lens hiding (Indexable)
 import Data.IxSet
+import Data.SafeCopy
+import Data.Serialize
+import GHC.Generics
+
+data Env = Env {_realRoot :: String, _persistDir :: String}
+makeLenses ''Env
 
 newtype Name = Name {unName :: String}
-    deriving (Show, Eq, Ord)
+    deriving stock (Show, Eq, Ord, Generic)
+    deriving anyclass (Serialize, SafeCopy)
 
 data FType
     = TypeTag
     | TypeFile
-    deriving (Show, Eq, Ord)
+    deriving stock (Show, Eq, Ord, Generic)
+    deriving anyclass (Serialize, SafeCopy)
 
 newtype Tag =
     Tag
         { unTag :: String
         }
-    deriving (Show, Eq, Ord)
+    deriving stock (Show, Eq, Ord, Generic)
+    deriving anyclass (Serialize, SafeCopy)
 
 data TFile =
     TFile
@@ -24,7 +36,8 @@ data TFile =
         , _name     :: Name
         , _tags     :: [Tag]
         }
-    deriving (Show, Eq, Ord)
+    deriving stock (Show, Eq, Ord, Generic)
+    deriving anyclass (Serialize, SafeCopy)
 
 newTag :: String -> [Tag] -> TFile
 newTag s tags = TFile TypeTag (Name s) (Tag "/" : tags)

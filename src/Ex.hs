@@ -1,5 +1,6 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TupleSections #-}
@@ -53,8 +54,7 @@ type TagPath = String
 data BetterFuseOps fh m = BetterFuseOps  {
         mfuseGetFileStat :: FilePath -> m (Either Errno FileStat),
         -- mfuseReadSymbolicLink :: FilePath -> m (Either Errno FilePath),
-        -- mfuseCreateDevice :: FilePath -> EntryType -> FileMode
-        --                  -> DeviceID -> m Errno,
+        mfuseCreateDevice :: FilePath -> EntryType -> FileMode -> DeviceID -> m Errno,
         mfuseCreateDirectory :: FilePath -> FileMode -> m Errno,
         -- mfuseRemoveLink :: FilePath -> m Errno,
         -- mfuseRemoveDirectory :: FilePath -> m Errno,
@@ -109,6 +109,7 @@ transformOps rootFS BetterFuseOps{..} = do
                        , fuseRelease = wrap2 mfuseRelease
                        , fuseSynchronizeFile = wrap2 mfuseSynchronizeFile
                        , fuseCreateDirectory = wrap2 mfuseCreateDirectory
+                       , fuseCreateDevice = wrap4 mfuseCreateDevice
                        }
 
 wrapState :: String -> IORef TagMap -> FilesM a -> IO a
@@ -150,6 +151,7 @@ helloFSOps = BetterFuseOps { mfuseGetFileStat = ffsGetFileStat
                            , mfuseRelease = ffsRelease
                            , mfuseSynchronizeFile = ffsSynchronizeFile
                            , mfuseCreateDirectory = ffsCreateDirectory
+                           , mfuseCreateDevice = ffsCreateDevice
                            }
 
 -- Fix this dumb assumption
@@ -235,6 +237,17 @@ ffsCreateDirectory path _ = do
     modify (insert tag)
     return eOK
 
+ffsCreateDevice :: (MonadReader Env m, MonadIO m) => FilePath -> EntryType -> FileMode -> DeviceID -> m Errno
+ffsCreateDevice path RegularFile mode id  = do
+    realPath <- getRealFilePathFromTagPath path
+    debugS "createFile" path
+    debugS "Creating" realPath
+    liftIO $ createDevice realPath mode id
+    debugS "DONE" realPath
+    return eOK -- TODO real error handling
+ffsCreateDevice path typ _mode _id  = do
+    debugS "createDevice unimplemented for type" typ
+    return eACCES
 
 getFileSystemStats :: String -> FilesM (Either Errno FileSystemStats)
 getFileSystemStats str =

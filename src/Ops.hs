@@ -5,8 +5,6 @@
 module Ops where
 
 import Control.Lens
-import Control.Monad.State
-import Control.Monad.Reader
 import System.FilePath.Lens
 import System.FilePath.Posix
 import Data.IxSet
@@ -19,26 +17,32 @@ import qualified Data.ByteString.Char8 as B
 import Types
 import Util
 
-getRealFilePath :: MonadReader Env m => TFile -> m FilePath
+import Polysemy
+import Polysemy.Input
+import Polysemy.Output
+import Polysemy.State
+
+getRealFilePath :: (Member (Input Env) r) => TFile -> Sem r FilePath
 getRealFilePath tfile = do
-    fsRoot <- view realRoot
+    fsRoot <- input <&> view realRoot
     return $ fsRoot </> (tfile ^. name . to unName)
 
-getRealFilePathFromTagPath :: MonadReader Env m => FilePath -> m FilePath
+getRealFilePathFromTagPath :: (Member (Input Env)) r => FilePath -> Sem r FilePath
 getRealFilePathFromTagPath tagPath = do
-    fsRoot <- view realRoot
+    fsRoot <- input <&> view realRoot
     return $ fsRoot </> (tagPath ^. filename)
 
 getTagsFromPath :: FilePath -> [Tag]
 getTagsFromPath path = Tag <$> splitDirectories path
 
-filesForTags :: (MonadState TagMap m, MonadIO m) =>  FilePath -> m TagMap
+filesForTags :: (Member (State TagMap) r, Member (Embed IO) r) =>  FilePath -> Sem r TagMap
 filesForTags tagPath = do
     tagMap <- get
     return $ tagMap @* (getTagsFromPath tagPath)
 
-fileFromPath :: (MonadState TagMap m, MonadIO m) => FilePath -> m (Maybe TFile)
+fileFromPath :: (Member (Output String) r, Member (State TagMap) r, Member (Embed IO) r) => FilePath -> Sem r (Maybe TFile)
 fileFromPath "/" = do
+    output $ "HI BOB!"
     debugS "fetching file for path" "/"
     result <- getOne . getEQ (Name "/") <$> get
     debugS "got" result
@@ -50,7 +54,7 @@ fileFromPath filePath = do
     debugS "got" result
     return result
 
-nameStat :: (MonadReader Env m, MonadIO m) => FuseContext -> TFile -> m (String, FileStat)
+nameStat :: (Member (Input Env) r, Member (Embed IO) r) => FuseContext -> TFile -> Sem r (String, FileStat)
 nameStat ctx f = (view (name . to unName) f,) <$> statFile ctx f
 
 
@@ -59,11 +63,11 @@ nameStat ctx f = (view (name . to unName) f,) <$> statFile ctx f
 -- statFile ctx (_fileType -> TypeFile) = fileStat ctx
 
 
-statFile :: (MonadReader Env m, MonadIO m) => FuseContext -> TFile -> m FileStat
+statFile :: (Member (Input Env) r, Member (Embed IO) r) => FuseContext -> TFile -> Sem r FileStat
 statFile ctx (_fileType -> TypeTag) = pure $ defaultDirStat ctx
 statFile ctx file = do
-    rootPath <- view realRoot
-    fileStats <- liftIO $ getFileStatus (rootPath </> file ^. name . to unName)
+    rootPath <- input <&> view realRoot
+    fileStats <- embed $ getFileStatus (rootPath </> file ^. name . to unName)
     return $ FileStat
              { statEntryType        = statusType fileStats
              , statFileMode         = fileMode fileStats

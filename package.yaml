@@ -33,6 +33,26 @@ dependencies:
 - cereal
 - safecopy
 - unix-bytestring
+- polysemy
+- polysemy-plugin
+
+default-extensions:
+- ScopedTypeVariables
+- DataKinds
+- FlexibleContexts
+- GADTs
+- LambdaCase
+- PolyKinds
+- RankNTypes
+- TypeApplications
+- TypeOperators
+- TypeFamilies
+
+ghc-options:
+  - -fplugin=Polysemy.Plugin
+  - -O2
+  - -flate-specialise
+  - -fspecialise-aggressively
 
 library:
   source-dirs: src

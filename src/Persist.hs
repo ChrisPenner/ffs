@@ -6,16 +6,19 @@ module Persist where
 import Data.SafeCopy
 import Data.Serialize hiding (get)
 import Types
-import Control.Monad.Reader
-import Control.Monad.State
-import Control.Monad.IO.Class
 import System.Directory
 import Control.Lens
 import System.FilePath.Posix
 import qualified Data.ByteString as BS
 import Util
+import Control.Monad.IO.Class
 
-loadIndex :: (MonadIO m) => m TagMap
+import Polysemy
+import Polysemy.IO
+import Polysemy.Input
+import Polysemy.State
+
+loadIndex :: MonadIO m => m TagMap
 loadIndex = do
     tagsFilePath <- getPersistenceDir <&> (</> "tags")
     tagMapBS <- liftIO $ BS.readFile tagsFilePath
@@ -23,11 +26,12 @@ loadIndex = do
         Left err -> debugS ("Error loading tags file from " <> tagsFilePath) err >> return mempty
         Right tagmap -> return tagmap
 
-persistIndex :: (MonadReader Env m, MonadState TagMap m, MonadIO m) => m ()
+persistIndex :: (Member (Input Env) r, Member (State TagMap) r, Member (Embed IO) r)
+             => Sem r ()
 persistIndex = do
     tagMap <- get
-    tagsFilePath <- view (persistDir . to (</> "tags"))
-    liftIO $ BS.writeFile tagsFilePath (runPut (safePut tagMap))
+    tagsFilePath <- input <&> view (persistDir . to (</> "tags"))
+    embed $ BS.writeFile tagsFilePath (runPut (safePut tagMap))
 
 getPersistenceDir :: MonadIO m => m FilePath
 getPersistenceDir = liftIO $ do

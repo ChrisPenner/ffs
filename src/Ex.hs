@@ -55,7 +55,7 @@ data BetterFuseOps fh m = BetterFuseOps  {
         -- mfuseReadSymbolicLink :: FilePath -> m (Either Errno FilePath),
         -- mfuseCreateDevice :: FilePath -> EntryType -> FileMode
         --                  -> DeviceID -> m Errno,
-        -- mfuseCreateDirectory :: FilePath -> FileMode -> m Errno,
+        mfuseCreateDirectory :: FilePath -> FileMode -> m Errno,
         -- mfuseRemoveLink :: FilePath -> m Errno,
         -- mfuseRemoveDirectory :: FilePath -> m Errno,
         -- mfuseCreateSymbolicLink :: FilePath -> FilePath -> m Errno,
@@ -108,6 +108,7 @@ transformOps rootFS BetterFuseOps{..} = do
                        , fuseFlush = wrap2 mfuseFlush
                        , fuseRelease = wrap2 mfuseRelease
                        , fuseSynchronizeFile = wrap2 mfuseSynchronizeFile
+                       , fuseCreateDirectory = wrap2 mfuseCreateDirectory
                        }
 
 wrapState :: String -> IORef TagMap -> FilesM a -> IO a
@@ -148,6 +149,7 @@ helloFSOps = BetterFuseOps { mfuseGetFileStat = ffsGetFileStat
                            , mfuseFlush = ffsFlush
                            , mfuseRelease = ffsRelease
                            , mfuseSynchronizeFile = ffsSynchronizeFile
+                           , mfuseCreateDirectory = ffsCreateDirectory
                            }
 
 -- Fix this dumb assumption
@@ -163,8 +165,11 @@ ffsGetFileStat filePath = do
     debugS "reading file stat" filePath
     ctx <- liftIO getFuseContext
     fileFromPath filePath >>= \case
-        Just f  -> Right <$> statFile ctx f
-        Nothing -> return $ Left eNOENT
+        Just f@(view fileType -> TypeTag)  -> return . Right $ defaultDirStat ctx
+        Just f@(view fileType -> TypeFile) -> Right <$> statFile ctx f
+        Nothing -> do
+            return $ Left eNOENT
+            -- return . Right $ defaultDirStat ctx
 
 ffsOpenDirectory :: TagPath -> FilesM Errno
 ffsOpenDirectory tagPath = do
@@ -214,13 +219,22 @@ ffsSetFileSize  path offset = do
     (liftIO $ setFileSize realFilePath offset) $> eOK
 
 ffsFlush :: FilePath -> FfsFd -> FilesM Errno
-ffsFlush path fd = return eOK -- TODO do something
+ffsFlush path fd = debugS "flushing" path >> return eOK -- TODO do something
 
 ffsRelease :: FilePath -> FfsFd -> FilesM ()
-ffsRelease path fd = return ()
+ffsRelease path fd = debugS "releasing" path >> return ()
 
 ffsSynchronizeFile :: FilePath -> SyncType -> FilesM Errno
-ffsSynchronizeFile path _ = return eOK -- TODO do something
+ffsSynchronizeFile path _ = debugS "synchronizing" path >> return eOK -- TODO do something
+
+ffsCreateDirectory :: FilePath -> FileMode -> FilesM Errno
+ffsCreateDirectory path _ = do
+    let tags = getTagsFromPath path
+    let tag = newTag (path ^. filename) tags
+    debugS "creating directory" tag
+    modify (insert tag)
+    return eOK
+
 
 getFileSystemStats :: String -> FilesM (Either Errno FileSystemStats)
 getFileSystemStats str =

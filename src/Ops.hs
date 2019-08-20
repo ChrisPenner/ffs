@@ -29,12 +29,13 @@ getRealFilePathFromTagPath tagPath = do
     fsRoot <- view realRoot
     return $ fsRoot </> (tagPath ^. filename)
 
+getTagsFromPath :: FilePath -> [Tag]
+getTagsFromPath path = Tag <$> splitDirectories path
 
 filesForTags :: (MonadState TagMap m, MonadIO m) =>  FilePath -> m TagMap
 filesForTags tagPath = do
-    let tags = splitDirectories tagPath
     tagMap <- get
-    return $ tagMap @* (Tag <$> tags)
+    return $ tagMap @* (getTagsFromPath tagPath)
 
 fileFromPath :: (MonadState TagMap m, MonadIO m) => FilePath -> m (Maybe TFile)
 fileFromPath "/" = do
@@ -87,10 +88,13 @@ defaultDirStat :: FuseContext -> FileStat
 defaultDirStat ctx = FileStat { statEntryType = Directory
                        , statFileMode = foldr1 unionFileModes
                                           [ ownerReadMode
+                                          , ownerWriteMode
                                           , ownerExecuteMode
                                           , groupReadMode
+                                          , groupWriteMode
                                           , groupExecuteMode
                                           , otherReadMode
+                                          , groupWriteMode
                                           , otherExecuteMode
                                           ]
                        , statLinkCount = 2
